@@ -17,6 +17,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 import selenium.webdriver.support.expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+import sqlite3
 
 
 def download_image(image_url, download_name):
@@ -123,6 +124,12 @@ def get_img_tenor(my_url = 'https://tenor.com/', scroll_max = 5):
 
     print("total image checked: {}".format(img_count))
 
-if __name__ == '__main__':
-    get_img_tenor()
 
+if __name__ == '__main__':
+    conn = sqlite3.connect("/Users/angellam/Desktop/Purdue/spring2022/DURI_research/crawler/graphicAttackCrawler/test.db")
+    path = os.path.abspath('test.db')
+    print(path)
+    print(os.path.exists("/Users/angellam/Desktop/Purdue/spring2022/DURI_research/crawler/graphicAttackCrawler/test.db"))
+    c = conn.cursor() # to be able to run the execute command
+    c.execute(""" INSERT INTO mytable (one,two) VALUES( 'test one', 2 ); """)
+    conn.commit()
