@@ -38,7 +38,7 @@ def download_image(image_url, download_name):
 
     return file_dir
 
-def get_img_giphy(my_url = 'https://giphy.com/'):
+def load_js_page(my_url):
     # because webpage is js rendered, cannot just get the html elements
     # https://stackoverflow.com/questions/54274458/scrape-pictures-from-javascript-rendered-webpage
     # use safari developer driver to simulate loading of webpage (to run its js and generate the images)
@@ -46,6 +46,11 @@ def get_img_giphy(my_url = 'https://giphy.com/'):
     # maximize window to get max number of gifs
     driver.maximize_window()
     driver.get(my_url)
+
+    return driver
+
+def get_img_giphy(my_url = 'https://giphy.com/', scroll_max = 5):
+    driver = load_js_page(my_url)
 
     # wait for the cookies popup and click agree so page continues to load
     id_locator = (By.ID, "didomi-notice-agree-button")
@@ -57,18 +62,19 @@ def get_img_giphy(my_url = 'https://giphy.com/'):
     class_locator = (By.CLASS_NAME, "giphy-img-loaded")
 
     # https://stackoverflow.com/questions/33094727/selenium-scroll-till-end-of-the-page
-    count = 0
-    scroll_max = 5
-    while count < scroll_max:
+    img_count = 0
+    scroll_count = 0
+    while scroll_count < scroll_max:
         # scroll
         driver.execute_script("window.scrollTo(0,document.body.scrollHeight);")
+        scroll_count += 1
+
         try:
             # wait for giphy-img-loaded class
             element_loaded= WebDriverWait(driver, 50).until(EC.presence_of_element_located(class_locator))
             # WHEN ALL GIPHY IS LOADED
             html = driver.page_source
             soup = BeautifulSoup(html, 'html.parser')
-            img_count = 0
             # find all images
             for source in soup.find_all('img'):
                 try:
@@ -80,21 +86,43 @@ def get_img_giphy(my_url = 'https://giphy.com/'):
                     img_count += 1
                 except Exception:
                     continue
-
         except TimeoutException:
             print("time out")
             break
 
-        count += 1
-        print("scroll count: {}".format(count))
-    else:
-        # do whatever must be done if the element is never found.
-        print("scroll max reached: {}".format(scroll_max))
-        pass
     print("total image checked: {}".format(img_count))
 
+def get_img_tenor(my_url = 'https://tenor.com/', scroll_max = 5):
+    driver = load_js_page(my_url)
 
+    # https://stackoverflow.com/questions/33094727/selenium-scroll-till-end-of-the-page
+    img_count = 0
+    scroll_count = 0
+    while scroll_count < scroll_max:
+        # scroll
+        driver.execute_script("window.scrollTo(0,document.body.scrollHeight);")
+        scroll_count += 1
+
+        try:
+            html = driver.page_source
+            soup = BeautifulSoup(html, 'html.parser')
+            # find all images
+            for source in soup.find_all('img'):
+                try:
+                    # get src if any
+                    src = source['src']
+                    if src.endswith(".gif"):
+                        # download if possible
+                        download_image(src, src.split("/")[-1]);
+                    img_count += 1
+                except Exception:
+                    continue
+        except TimeoutException:
+            print("time out")
+            break
+
+    print("total image checked: {}".format(img_count))
 
 if __name__ == '__main__':
-    get_img_giphy()
+    get_img_tenor()
 
