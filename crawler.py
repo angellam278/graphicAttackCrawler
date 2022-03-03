@@ -2,92 +2,99 @@
 # https://rubikscode.net/2021/06/21/scraping-images-with-python/
 
 import logging
-from urllib.parse import urljoin
+#import urllib2
+# from urllib.request import urlopen
+#from urllib3.request import urlopen
+# from urllib.parse import urljoin
 import requests
 # other options: scrapy, selenium but going with beautifulSoup first
 from bs4 import BeautifulSoup
 import shutil
 import os
+import re
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.wait import WebDriverWait
+import selenium.webdriver.support.expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
-logging.basicConfig(
-    format='%(asctime)s %(levelname)s:%(message)s',
-    level=logging.INFO)
 
-class Crawler:
+def download_image(image_url, download_name):
+    # request image
+    response = requests.get(image_url, stream=True)
 
-    def __init__(self, urls=[]):
-        self.visited_urls = []
-        self.urls_to_visit = urls
+    # prepare file directory
+    file_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images_bs")
+    if not os.path.exists(file_dir):
+        os.mkdir(file_dir)
+    file_path = os.path.join(file_dir, "{}.gif".format(download_name))
+    # save file
+    print("saving -> {}".format(file_path))
+    file = open(file_path, 'wb')
+    response.raw.decode_content = True
+    shutil.copyfileobj(response.raw, file)
 
-    def download_url(self, url):
-        # send request
-        return requests.get(url).text
+    del response
 
-    def get_linked_urls(self, url, html):
-        image_info = []
-        soup = BeautifulSoup(html, 'html.parser')
-        # find all images: all elements from HTML DOM that have tag <a> and class entry-featured-image-url
-        #for link in soup.find_all("a", class_='entry-featured-image-url'):
-        # TODO: do for giphy web?
-        for link in soup.find_all("a"):
-            # find images for all links
-            image_info.append(self.find_images(link, True))
-            path = link.get('href')
-            if path and path.startswith('/'):
-                path = urljoin(url, path)
-            yield path
+    return file_dir
 
-    def find_images(self, alink, download=False):
-        image_tag = alink.findChildren("img")
-        image_src = ""
-        img_alt = ""
-        if image_tag:
-            image_src = image_tag[0]["src"]
-            if not image_src.endswith(".gif"):
-                # only look for gifs
-                return ("", "")
-            img_alt = image_tag[0]["alt"]
-            print("IMAGE: {}, {}".format(image_src, img_alt))
-            if download:
-                self.download_image(image_src)
-            # get image source and alternative description
-        return (image_src, img_alt)
+def get_img_giphy(my_url = 'https://giphy.com/'):
+    # because webpage is js rendered, cannot just get the html elements
+    # https://stackoverflow.com/questions/54274458/scrape-pictures-from-javascript-rendered-webpage
+    # use safari developer driver to simulate loading of webpage (to run its js and generate the images)
+    driver = webdriver.safari.webdriver.WebDriver()
+    # maximize window to get max number of gifs
+    driver.maximize_window()
+    driver.get(my_url)
 
-    def download_image(self, image):
-        response = requests.get(image, stream=True)
-        # remove all spaces and special characters
-        realname = ''.join(e for e in image[1] if e.isalnum())
-        file_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images_bs")
-        if not os.path.exists(file_dir):
-            os.mkdir(file_dir)
-        file_path = os.path.join(file_dir, "{}.gif".format(realname))
-        print("saving -> {}".format(file_path))
-        file = open(file_path, 'wb')
+    # wait for the cookies popup and click agree so page continues to load
+    id_locator = (By.ID, "didomi-notice-agree-button")
+    element= WebDriverWait(driver, 100).until(EC.presence_of_element_located(id_locator))
+    p_element = driver.find_element(*id_locator)
+    p_element.click()
 
-        response.raw.decode_content = True
-        shutil.copyfileobj(response.raw, file)
-        del response
+    # class selector to wait for giphy-img-loaded class to appear (after each scroll)
+    class_locator = (By.CLASS_NAME, "giphy-img-loaded")
 
-    def add_url_to_visit(self, url):
-        if url not in self.visited_urls and url not in self.urls_to_visit:
-            self.urls_to_visit.append(url)
+    # https://stackoverflow.com/questions/33094727/selenium-scroll-till-end-of-the-page
+    count = 0
+    scroll_max = 5
+    while count < scroll_max:
+        # scroll
+        driver.execute_script("window.scrollTo(0,document.body.scrollHeight);")
+        try:
+            # wait for giphy-img-loaded class
+            element_loaded= WebDriverWait(driver, 50).until(EC.presence_of_element_located(class_locator))
+            # WHEN ALL GIPHY IS LOADED
+            html = driver.page_source
+            soup = BeautifulSoup(html, 'html.parser')
+            img_count = 0
+            # find all images
+            for source in soup.find_all('img'):
+                try:
+                    # get src if any
+                    src = source['src']
+                    # download if possible
+                    # some has unloaded URL like: data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7
+                    download_image(src, src.split("/")[-2]);
+                    img_count += 1
+                except Exception:
+                    continue
 
-    def crawl(self, url):
-        html = self.download_url(url)
-        for url in self.get_linked_urls(url, html):
-            self.add_url_to_visit(url)
+        except TimeoutException:
+            print("time out")
+            break
 
-    def run(self):
-        # recursively call through related links
-        while self.urls_to_visit:
-            url = self.urls_to_visit.pop(0)
-            logging.info(f'Crawling: {url}')
-            try:
-                self.crawl(url)
-            except Exception:
-                logging.exception(f'Failed to crawl: {url}')
-            finally:
-                self.visited_urls.append(url)
+        count += 1
+        print("scroll count: {}".format(count))
+    else:
+        # do whatever must be done if the element is never found.
+        print("scroll max reached: {}".format(scroll_max))
+        pass
+    print("total image checked: {}".format(img_count))
+
+
 
 if __name__ == '__main__':
-    Crawler(urls=['https://giphy.com/']).run()
+    get_img_giphy()
+
