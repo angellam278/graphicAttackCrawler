@@ -20,6 +20,8 @@ from PIL import Image
 
 LOGGER = logging.getLogger(__name__)
 COMPATIBLE = 128
+DB = None
+DB_CONN = None
 
 def download_image(image_url, download_name):
     # request image
@@ -88,14 +90,10 @@ def get_img_giphy(my_url = 'https://giphy.com/', scroll_max = 5):
                 else:
                     # download if possible
                     # some has unloaded URL like: data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7
-                    downloaded_img = download_image(src, src.split("/")[-2])
-                    if (evaluate_image(downloaded_img)):
-                        # log in database
-                        print("LOGGING IN DB")
-                    else:
-                        print("SAFE")
-                    # delete image
-                    os.remove(downloaded_img)
+                    if src.endswith(".gif"):
+                        # download if possible
+                        evaluate_and_log(src)
+                        img_count += 1
                     img_count += 1
         except TimeoutException:
             print("time out")
@@ -127,21 +125,32 @@ def get_img_tenor(my_url = 'https://tenor.com/', scroll_max = 5):
                 else:
                     if src.endswith(".gif"):
                         # download if possible
-                        downloaded_img = download_image(src, src.split("/")[-1])
-                        if (evaluate_image(downloaded_img)):
-                            # log in database
-                            print("LOGGING IN DB")
-                        else:
-                            print("SAFE")
-                        # delete image
-                        LOGGER.debug("removing evaluated image -> %s", downloaded_img)
-                        os.remove(downloaded_img)
+                        evaluate_and_log(src)
                         img_count += 1
         except TimeoutException:
             print("time out")
             break
 
     LOGGER.info("Total GIFs checked: %s", img_count)
+
+def evaluate_and_log(image_src):
+    # check if alraedy evaluated and in DB, dont do again (So we will also store the ones without danger)
+    if (DB.execute(""" SELECT one, two FROM mytable WHERE one = '{0}'; """.format(image_src))):
+        LOGGER.debug("[Skipping] Image already evaluated: %s", image_src)
+        return
+
+    downloaded_img = download_image(image_src, image_src.split("/")[-1])
+    danger_level = evaluate_image(downloaded_img)
+
+    # log in database
+    LOGGER.debug("Logging in DB: %s, %s", image_src, danger_level)
+    DB.execute(""" INSERT INTO mytable (one,two) VALUES('{0}', {1}); """.format(image_src, danger_level))
+    # commit any changes to DB
+    DB_CONN.commit()
+
+    # delete image
+    LOGGER.debug("removing evaluated image -> %s", downloaded_img)
+    os.remove(downloaded_img)
 
 def get_intensity(r, g, b):
     # intensity level (luminance) range of 0.0 to 255.0
@@ -184,6 +193,7 @@ def evaluate_image(image_path):
         total_duration = 0
         # get total frames
         frame_count = im.n_frames
+        diff_frame_count = 0 # to average danger level
         LOGGER.debug("Total frames: %s", frame_count)
 
         # store first frame's info (so we don't have to check if frame != 0 every frame)
@@ -252,6 +262,7 @@ def evaluate_image(image_path):
             if not different_pixel_count:
                 # skip if all pixels in the previous and current frames are the same
                 continue
+            diff_frame_count += 1
 
             # evaluating
             eval_count = 0 # to be incremented when a test failed (unsafe)
@@ -297,11 +308,13 @@ def evaluate_image(image_path):
 
     LOGGER.debug("danger_level: %s", danger_level)
     LOGGER.debug("frame_count: %s", frame_count)
+    LOGGER.debug("diff_frame_count: %s", diff_frame_count)
     # averaging the danger level per frame TODO: Or should not use average? is one frame enough to mark as danger?
-    danger_level = danger_level/frame_count
+    danger_level = danger_level/diff_frame_count
     LOGGER.debug("average danger_level: %s", danger_level)
     if (danger_level == 1):
         LOGGER.info("This GIF is risky")
+        # NOTE right now almost all is flagged as risky
     elif (danger_level == 2):
         LOGGER.info("This GIF is dangerous")
     elif (danger_level == 3):
@@ -332,8 +345,9 @@ if __name__ == '__main__':
     db_path = "/Users/angellam/Desktop/Purdue/spring2022/DURI_research/crawler/graphicAttackCrawler/test.db"
     if os.path.exists(db_path):
         LOGGER.info("Writing to Database: %s", db_path)
-        conn = sqlite3.connect(db_path)
-
+        DB_CONN = sqlite3.connect(db_path)
+        # to be able to run the execute command
+        DB = DB_CONN.cursor()
         # begin crawling
         get_img_tenor()
     else:
