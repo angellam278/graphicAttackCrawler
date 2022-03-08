@@ -1,11 +1,9 @@
 # python 3
-# https://rubikscode.net/2021/06/21/scraping-images-with-python/
+# scraping code reference: https://rubikscode.net/2021/06/21/scraping-images-with-python/
+# image evaluation code reference: https://github.com/seanjoo4/DURIResearch/blob/master/src/Pixel.java
 
 import logging
-#import urllib2
-# from urllib.request import urlopen
-#from urllib3.request import urlopen
-# from urllib.parse import urljoin
+import argparse
 import requests
 # other options: scrapy, selenium but going with beautifulSoup first
 from bs4 import BeautifulSoup
@@ -18,7 +16,10 @@ from selenium.webdriver.support.wait import WebDriverWait
 import selenium.webdriver.support.expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 import sqlite3
+from PIL import Image
 
+LOGGER = logging.getLogger(__name__)
+COMPATIBLE = 128
 
 def download_image(image_url, download_name):
     # request image
@@ -28,16 +29,17 @@ def download_image(image_url, download_name):
     file_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images_bs")
     if not os.path.exists(file_dir):
         os.mkdir(file_dir)
-    file_path = os.path.join(file_dir, "{}.gif".format(download_name))
+    file_path = os.path.join(file_dir, "{0}.gif".format(download_name))
     # save file
-    print("saving -> {}".format(file_path))
     file = open(file_path, 'wb')
     response.raw.decode_content = True
     shutil.copyfileobj(response.raw, file)
 
     del response
 
-    return file_dir
+    LOGGER.debug("saving -> %s", file_path)
+
+    return file_path
 
 def load_js_page(my_url):
     # because webpage is js rendered, cannot just get the html elements
@@ -81,17 +83,25 @@ def get_img_giphy(my_url = 'https://giphy.com/', scroll_max = 5):
                 try:
                     # get src if any
                     src = source['src']
-                    # download if possible
-                    # some has unloaded URL like: data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7
-                    download_image(src, src.split("/")[-2]);
-                    img_count += 1
                 except Exception:
                     continue
+                else:
+                    # download if possible
+                    # some has unloaded URL like: data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7
+                    downloaded_img = download_image(src, src.split("/")[-2])
+                    if (evaluate_image(downloaded_img)):
+                        # log in database
+                        print("LOGGING IN DB")
+                    else:
+                        print("SAFE")
+                    # delete image
+                    os.remove(downloaded_img)
+                    img_count += 1
         except TimeoutException:
             print("time out")
             break
 
-    print("total image checked: {}".format(img_count))
+    LOGGER.info("Total GIFs checked: %s", img_count)
 
 def get_img_tenor(my_url = 'https://tenor.com/', scroll_max = 5):
     driver = load_js_page(my_url)
@@ -112,24 +122,219 @@ def get_img_tenor(my_url = 'https://tenor.com/', scroll_max = 5):
                 try:
                     # get src if any
                     src = source['src']
-                    if src.endswith(".gif"):
-                        # download if possible
-                        download_image(src, src.split("/")[-1]);
-                    img_count += 1
                 except Exception:
                     continue
+                else:
+                    if src.endswith(".gif"):
+                        # download if possible
+                        downloaded_img = download_image(src, src.split("/")[-1])
+                        if (evaluate_image(downloaded_img)):
+                            # log in database
+                            print("LOGGING IN DB")
+                        else:
+                            print("SAFE")
+                        # delete image
+                        LOGGER.debug("removing evaluated image -> %s", downloaded_img)
+                        os.remove(downloaded_img)
+                        img_count += 1
         except TimeoutException:
             print("time out")
             break
 
-    print("total image checked: {}".format(img_count))
+    LOGGER.info("Total GIFs checked: %s", img_count)
 
+def get_intensity(r, g, b):
+    # intensity level (luminance) range of 0.0 to 255.0
+    # values from the java code
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+def get_brightness(intensity):
+    return 413.435 * pow(0.002745 * intensity + 0.0189623, 2.2);
+
+def is_compatible(intensity_a, intensity_b):
+    return abs(intensity_a - intensity_b) < COMPATIBLE;
+
+def is_hz_dangerous(duration):
+    # one Cycle/Millisecond is equal to 1000 Hertzs.
+    hz = 1/(duration/1000)
+    LOGGER.debug("hz: %s", hz)
+    if hz >= 3 and hz <= 30:
+        return True
+    return False
+
+def evaluate_image(image_path):
+    # returns 0 if safe
+    LOGGER.info("Evaluating image: %s", image_path)
+
+    # one dangerous frame will be flagged as danger (TODO is it too low?)
+    danger_level = 0
+    frame_count = 0
+
+    if not image_path.endswith(".gif"):
+        LOGGER.error("Image not gif (skipped): %s", image_path)
+        return
+
+    with Image.open(image_path) as im:
+
+        # Get the width and hight of the image for iterating over
+        width, height = im.size
+        LOGGER.debug("Image dimension: %s x %s", width, height)
+
+        # total gif duration
+        total_duration = 0
+        # get total frames
+        frame_count = im.n_frames
+        LOGGER.debug("Total frames: %s", frame_count)
+
+        # store first frame's info (so we don't have to check if frame != 0 every frame)
+        im.seek(0)
+        # with pix[1, 1] GIF gets single value because GIF pixels refer to one of the 256 values in the GIF color palette.
+        # GIFs are pallettized, whereas JPEGs are RGB. The act of transforming the image disposes of the palette.
+        rgb_im = im.convert('RGB')
+        # storing pixel's (R,G,B) values in a 2D array [w][h]
+        prev_frame_buffer = []
+        for w in range(width):
+            # pixel data per col
+            column_buffer = []
+            for h in range(height):
+                # Get the RGB Value of the a pixel of an image
+                r,g,b = rgb_im.getpixel((w, h))
+                column_buffer.append((r,g,b))
+            prev_frame_buffer.append(column_buffer)
+
+        # evaluating gif starting from second frame
+        for i in range(1, frame_count):
+            # milliseconds
+            frame_duration = im.info.get("duration", 0)
+            total_duration += frame_duration
+
+            # values to later evaluate
+            compatible_count = 0 # total number of compatible pixels
+            prev_total_intensity = 0 # previous frame's total intensity
+            total_intensity = 0 # current frame's total intensity
+            different_pixel_count = 0 # total number of different pixels
+            difference = 0 # total diff in pixel value
+
+            # get frame and convert to RGB for every frame
+            im.seek(i)
+            rgb_im = im.convert('RGB')
+            # ((rgb))
+            frame_buffer = []
+            # read frame by columns
+            for w in range(width):
+                frame_col_buffer = []
+                for h in range(height):
+                    # Get the RGB Value of the a pixel of an image
+                    r,g,b = rgb_im.getpixel((w, h))
+                    frame_col_buffer.append((r,g,b))
+
+                    prev_frame_r, prev_frame_g, prev_frame_b = prev_frame_buffer[w][h]
+
+                    # if pixel has different colors from prev frame then evaluate
+                    if (prev_frame_r != r and prev_frame_g != g and prev_frame_b != b):
+                        # only calculate previous intensity when needed
+                        prev_intensity = get_intensity(prev_frame_r, prev_frame_g, prev_frame_b)
+                        intensity = get_intensity(r, g, b)
+                        prev_total_intensity += prev_intensity
+                        total_intensity += intensity
+                        # get total differences
+                        difference += (abs(prev_frame_r - r) + abs(prev_frame_g - g) + abs(prev_frame_b - b))
+                        if (is_compatible(intensity, prev_intensity)):
+                            compatible_count += 1
+                        # increment number of different pixels
+                        different_pixel_count += 1
+
+                frame_buffer.append(frame_col_buffer)
+
+            # store current and previous
+            prev_frame_buffer = frame_buffer
+
+            if not different_pixel_count:
+                # skip if all pixels in the previous and current frames are the same
+                continue
+
+            # evaluating
+            eval_count = 0 # to be incremented when a test failed (unsafe)
+            total_pixel_values = width * height * 3;
+            different_pixel_percentage = different_pixel_count / total_pixel_values
+            # TODO why java says its not compatible count?
+            different_percentage = (compatible_count / different_pixel_count) * 100
+            danger_percent = different_pixel_percentage / different_percentage
+
+            LOGGER.debug("The total amount of pixels are: %s", total_pixel_values)
+            LOGGER.debug("The percentage of dangerous Pixels are: %s percent", danger_percent)
+            if danger_percent > 30:
+                LOGGER.debug("The percentage of dangerous pixels are dangerous.")
+                eval_count += 1
+
+            if is_hz_dangerous(frame_duration):
+                LOGGER.debug("This GIF's Hz is in the range of being dangerous.")
+                eval_count += 1
+            else:
+                LOGGER.debug("This GIF's Hz is in the range of being safe.")
+
+            # Normalizing the value of different pixels for accuracy(average pixels per color component)
+            avg_different_pixels = difference / total_pixel_values
+            # There are 255 values of pixels in total
+            percentage = (avg_different_pixels / 255) * 100;
+            LOGGER.debug("Difference Percentage-->%s", percentage)
+
+            # brightness/intensity
+            avg_intensity = total_intensity / total_pixel_values;
+            avg_prev_intensity = prev_total_intensity / total_pixel_values;
+            LOGGER.debug("This is the average intensity of the previous frame: %s", avg_prev_intensity)
+            LOGGER.debug("This is the average intensity of the current frame: %s", avg_intensity)
+            avg_intensity_ratio = min(avg_intensity, avg_prev_intensity) / max(avg_intensity, avg_prev_intensity)
+            if avg_intensity_ratio <= 0.55:
+                LOGGER.debug("Average intensity ratio between current and previous frame: %s is dangerous", avg_intensity_ratio)
+                eval_count += 1
+
+            danger_level += eval_count
+            LOGGER.debug("-------------------------------------------------------\n")
+
+    # report final image evaluation results
+    LOGGER.debug("total duration time for the GIF is %s milliseconds", total_duration)
+
+    LOGGER.debug("danger_level: %s", danger_level)
+    LOGGER.debug("frame_count: %s", frame_count)
+    # averaging the danger level per frame TODO: Or should not use average? is one frame enough to mark as danger?
+    danger_level = danger_level/frame_count
+    LOGGER.debug("average danger_level: %s", danger_level)
+    if (danger_level == 1):
+        LOGGER.info("This GIF is risky")
+    elif (danger_level == 2):
+        LOGGER.info("This GIF is dangerous")
+    elif (danger_level == 3):
+        LOGGER.info("This GIF is extreme")
+    else:
+        LOGGER.info("This GIF is safe to watch")
+    LOGGER.debug("=======================================================\n")
+
+    # close image
+    im.close()
+    return danger_level
 
 if __name__ == '__main__':
-    conn = sqlite3.connect("/Users/angellam/Desktop/Purdue/spring2022/DURI_research/crawler/graphicAttackCrawler/test.db")
-    path = os.path.abspath('test.db')
-    print(path)
-    print(os.path.exists("/Users/angellam/Desktop/Purdue/spring2022/DURI_research/crawler/graphicAttackCrawler/test.db"))
-    c = conn.cursor() # to be able to run the execute command
-    c.execute(""" INSERT INTO mytable (one,two) VALUES( 'test one', 2 ); """)
-    conn.commit()
+    parser = argparse.ArgumentParser(description='Web Crawler to find dangerous gifs')
+    parser.add_argument('-d', dest='debug', action='store_true', help='debug mode')
+    args = parser.parse_args()
+
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG)
+        LOGGER.setLevel(level=logging.DEBUG)
+        LOGGER.debug("*** Debug Mode ***")
+    else:
+        logging.basicConfig(level=logging.INFO)
+        LOGGER.setLevel(level=logging.INFO)
+
+    # evaluate_image("/Users/angellam/Desktop/Purdue/spring2022/DURI_research/DURIResearch-master/test2.gif")
+    # TODO comment on mini functions, make db an input?
+    db_path = "/Users/angellam/Desktop/Purdue/spring2022/DURI_research/crawler/graphicAttackCrawler/test.db"
+    if os.path.exists(db_path):
+        LOGGER.info("Writing to Database: %s", db_path)
+        conn = sqlite3.connect(db_path)
+
+        # begin crawling
+        get_img_tenor()
+    else:
+        LOGGER.error("Database missing")
