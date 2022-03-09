@@ -20,10 +20,21 @@ from PIL import Image
 
 LOGGER = logging.getLogger(__name__)
 COMPATIBLE = 128
+# to connect and update the database in code
+# NOTE: we are committing to database on every change
+# (not efficient, but safe when we don't have a time limit to run this on)
 DB = None
 DB_CONN = None
 
 def download_image(image_url, download_name):
+    """
+    Args:
+        - *image_url* (string) url to .gif to download (doesn't need to end with .gif)
+        - *download_name* (string) name to save file to
+
+    Returns:
+    - *file_path* (string) full path to saved file on computer
+    """
     # request image
     response = requests.get(image_url, stream=True)
 
@@ -44,6 +55,13 @@ def download_image(image_url, download_name):
     return file_path
 
 def load_js_page(my_url):
+    """
+    Args:
+        - *my_url* (string) url to webpage
+
+    Returns:
+    - *driver* (WebDriver) to simulate js loading page
+    """
     # because webpage is js rendered, cannot just get the html elements
     # https://stackoverflow.com/questions/54274458/scrape-pictures-from-javascript-rendered-webpage
     # use safari developer driver to simulate loading of webpage (to run its js and generate the images)
@@ -54,7 +72,14 @@ def load_js_page(my_url):
 
     return driver
 
-def get_img_giphy(my_url = 'https://giphy.com/', scroll_max = 5):
+def get_img_giphy(my_url="https://giphy.com/", scroll_max=5):
+    """
+    Crawls giphy (each web has different crawl structure)
+
+    Args:
+        - *my_url* (string) url to webpage
+        - *scroll_max* (int) max times to scroll the page
+    """
     driver = load_js_page(my_url)
 
     # wait for the cookies popup and click agree so page continues to load
@@ -76,7 +101,9 @@ def get_img_giphy(my_url = 'https://giphy.com/', scroll_max = 5):
 
         try:
             # wait for giphy-img-loaded class
-            element_loaded= WebDriverWait(driver, 50).until(EC.presence_of_element_located(class_locator))
+            element_loaded= WebDriverWait(driver, 50).until(
+                EC.presence_of_element_located(class_locator)
+            )
             # WHEN ALL GIPHY IS LOADED
             html = driver.page_source
             soup = BeautifulSoup(html, 'html.parser')
@@ -89,7 +116,8 @@ def get_img_giphy(my_url = 'https://giphy.com/', scroll_max = 5):
                     continue
                 else:
                     # download if possible
-                    # some has unloaded URL like: data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7
+                    # some has unloaded URL like:
+                    # data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7
                     if src.endswith(".gif"):
                         # download if possible
                         evaluate_and_log(src)
@@ -101,7 +129,14 @@ def get_img_giphy(my_url = 'https://giphy.com/', scroll_max = 5):
 
     LOGGER.info("Total GIFs checked: %s", img_count)
 
-def get_img_tenor(my_url = 'https://tenor.com/', scroll_max = 5):
+def get_img_tenor(my_url="https://tenor.com/", scroll_max=5):
+    """
+    Crawls tenor (each web has different crawl structure)
+
+    Args:
+        - *my_url* (string) url to webpage
+        - *scroll_max* (int) max times to scroll the page
+    """
     driver = load_js_page(my_url)
 
     # https://stackoverflow.com/questions/33094727/selenium-scroll-till-end-of-the-page
@@ -134,8 +169,17 @@ def get_img_tenor(my_url = 'https://tenor.com/', scroll_max = 5):
     LOGGER.info("Total GIFs checked: %s", img_count)
 
 def evaluate_and_log(image_src):
+    """
+    If not already in our databsae,
+    download the given image url, evaluate and log its danger level.
+
+    Args:
+        - *image_src* (string) url to image on web
+    """
     # check if alraedy evaluated and in DB, dont do again (So we will also store the ones without danger)
-    if (DB.execute(""" SELECT one, two FROM mytable WHERE one = '{0}'; """.format(image_src))):
+    if (DB.execute(
+        """ SELECT one, two FROM mytable WHERE one = '{0}'; """.format(image_src)
+    )):
         LOGGER.debug("[Skipping] Image already evaluated: %s", image_src)
         return
 
@@ -144,7 +188,11 @@ def evaluate_and_log(image_src):
 
     # log in database
     LOGGER.debug("Logging in DB: %s, %s", image_src, danger_level)
-    DB.execute(""" INSERT INTO mytable (one,two) VALUES('{0}', {1}); """.format(image_src, danger_level))
+    DB.execute(
+        """ INSERT INTO mytable (one,two) VALUES('{0}', {1}); """.format(
+            image_src, danger_level
+        )
+    )
     # commit any changes to DB
     DB_CONN.commit()
 
@@ -153,17 +201,57 @@ def evaluate_and_log(image_src):
     os.remove(downloaded_img)
 
 def get_intensity(r, g, b):
+    """
+    Adapted from java code to get image intensity
+
+    Args:
+        - *r* (int) red
+        - *g* (int) green
+        - *b* (int) blue
+
+    Returns:
+        (int)
+    """
     # intensity level (luminance) range of 0.0 to 255.0
     # values from the java code
     return 0.299 * r + 0.587 * g + 0.114 * b
 
 def get_brightness(intensity):
+    """
+    Adapted from java code to get image brightness
+
+    Args:
+        - *intensity* (int)
+
+    Returns:
+        (int)
+    """
     return 413.435 * pow(0.002745 * intensity + 0.0189623, 2.2);
 
 def is_compatible(intensity_a, intensity_b):
+    """
+    Adapted from java code to see if the differences between the
+    given intensities are safe (under given COMPATIBLE value)
+
+    Args:
+        - *intensity_a* (int)
+        - *intensity_b* (int)
+
+    Returns:
+        (boolean)
+    """
     return abs(intensity_a - intensity_b) < COMPATIBLE;
 
 def is_hz_dangerous(duration):
+    """
+    Adapted from java code to see if the hz of gif is safe
+
+    Args:
+        - *duration* (int)
+
+    Returns:
+        (boolean)
+    """
     # one Cycle/Millisecond is equal to 1000 Hertzs.
     hz = 1/(duration/1000)
     LOGGER.debug("hz: %s", hz)
@@ -172,6 +260,16 @@ def is_hz_dangerous(duration):
     return False
 
 def evaluate_image(image_path):
+    """
+    Evaluate the frames, hz and color brightness of the gifs.
+    Outputs a danger level. 0 being safe.
+
+    Args:
+        - *image_path* (string) full path to image on local computer
+
+    Returns:
+        (int) 0 = safe, 1 = risky, 2 = dangerous, 3 = extreme
+    """
     # returns 0 if safe
     LOGGER.info("Evaluating image: %s", image_path)
 
@@ -198,8 +296,10 @@ def evaluate_image(image_path):
 
         # store first frame's info (so we don't have to check if frame != 0 every frame)
         im.seek(0)
-        # with pix[1, 1] GIF gets single value because GIF pixels refer to one of the 256 values in the GIF color palette.
-        # GIFs are pallettized, whereas JPEGs are RGB. The act of transforming the image disposes of the palette.
+        # with pix[1, 1] GIF gets single value because
+        # GIF pixels refer to one of the 256 values in the GIF color palette.
+        # GIFs are pallettized, whereas JPEGs are RGB.
+        # The act of transforming the image disposes of the palette.
         rgb_im = im.convert('RGB')
         # storing pixel's (R,G,B) values in a 2D array [w][h]
         prev_frame_buffer = []
@@ -248,7 +348,9 @@ def evaluate_image(image_path):
                         prev_total_intensity += prev_intensity
                         total_intensity += intensity
                         # get total differences
-                        difference += (abs(prev_frame_r - r) + abs(prev_frame_g - g) + abs(prev_frame_b - b))
+                        difference += (abs(prev_frame_r - r) \
+                            + abs(prev_frame_g - g) \
+                            + abs(prev_frame_b - b))
                         if (is_compatible(intensity, prev_intensity)):
                             compatible_count += 1
                         # increment number of different pixels
@@ -293,11 +395,21 @@ def evaluate_image(image_path):
             # brightness/intensity
             avg_intensity = total_intensity / total_pixel_values;
             avg_prev_intensity = prev_total_intensity / total_pixel_values;
-            LOGGER.debug("This is the average intensity of the previous frame: %s", avg_prev_intensity)
-            LOGGER.debug("This is the average intensity of the current frame: %s", avg_intensity)
-            avg_intensity_ratio = min(avg_intensity, avg_prev_intensity) / max(avg_intensity, avg_prev_intensity)
+            LOGGER.debug(
+                "This is the average intensity of the previous frame: %s",
+                avg_prev_intensity
+            )
+            LOGGER.debug(
+                "This is the average intensity of the current frame: %s",
+                avg_intensity
+            )
+            avg_intensity_ratio = \
+                min(avg_intensity, avg_prev_intensity) / max(avg_intensity, avg_prev_intensity)
             if avg_intensity_ratio <= 0.55:
-                LOGGER.debug("Average intensity ratio between current and previous frame: %s is dangerous", avg_intensity_ratio)
+                LOGGER.debug(
+                    "Average intensity ratio between current and previous frame: %s is dangerous",
+                    avg_intensity_ratio
+                )
                 eval_count += 1
 
             danger_level += eval_count
@@ -327,8 +439,10 @@ def evaluate_image(image_path):
     im.close()
     return danger_level
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Web Crawler to find dangerous gifs')
+    # type file.py -d to enter debug mode
     parser.add_argument('-d', dest='debug', action='store_true', help='debug mode')
     args = parser.parse_args()
 
@@ -341,7 +455,7 @@ if __name__ == '__main__':
         LOGGER.setLevel(level=logging.INFO)
 
     # evaluate_image("/Users/angellam/Desktop/Purdue/spring2022/DURI_research/DURIResearch-master/test2.gif")
-    # TODO comment on mini functions, make db an input?
+    # TODO make db an input?
     db_path = "/Users/angellam/Desktop/Purdue/spring2022/DURI_research/crawler/graphicAttackCrawler/test.db"
     if os.path.exists(db_path):
         LOGGER.info("Writing to Database: %s", db_path)
